@@ -19,7 +19,7 @@ permissions:
   actions: read
 
 env:
-  HF_USERNAME: sathisaihuse
+  HF_USERNAME: sathishaihuse
   HF_DATASET: wellness-tourism-dataset-final
   HF_MODEL_NAME: wellness-tourism-model-best
   OPTUNA_TRIALS: 20
