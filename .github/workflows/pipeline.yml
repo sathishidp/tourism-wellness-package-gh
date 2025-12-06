@@ -19,7 +19,7 @@ permissions:
   actions: read
 
 env:
-  HF_USERNAME: sathishaiuse
+  HF_USERNAME: sathishuse
   HF_DATASET: wellness-tourism-dataset-final
   HF_MODEL_NAME: wellness-tourism-model-best
   OPTUNA_TRIALS: 20
@@ -107,6 +107,39 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: "3.11"
+
+      - name: Install CI dependencies (fast)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tourism_project/requirements-ci.txt
+
+      - name: Fetch train/test from HF dataset
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          from huggingface_hub import hf_hub_download
+          from pathlib import Path
+          import os
+
+          hf_username = os.getenv("HF_USERNAME", "sathishaiuse")
+          hf_dataset = os.getenv("HF_DATASET", "wellness-tourism-dataset-final")
+          repo_id = f"{hf_username}/{hf_dataset}"
+
+          out_dir = Path("tourism_project/data")
+          out_dir.mkdir(parents=True, exist_ok=True)
+
+          files = ["train.csv", "test.csv", "cleaned_full.csv"]
+          for fname in files:
+              try:
+                  print("Downloading", fname)
+                  path = hf_hub_download(repo_id=repo_id, filename=fname, token=os.getenv("HF_TOKEN"))
+                  dest = out_dir / fname
+                  dest.write_bytes(Path(path).read_bytes())
+                  print("Saved to", dest)
+              except Exception as e:
+                  print(f"Warning: failed to download {fname}: {e}")
+          PY
 
       - name: Install ML dependencies
         run: |
