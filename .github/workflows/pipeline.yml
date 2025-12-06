@@ -3,82 +3,192 @@ name: Tourism Project Pipeline
 on:
   push:
     branches:
-      - main  # Automatically triggers on push to the main branch
+      - main
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: mlops-pipeline
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  id-token: write
+  actions: read
+
+env:
+  HF_USERNAME: sathishaiuse
+  HF_DATASET: wellness-tourism-dataset-final
+  HF_MODEL_NAME: wellness-tourism-model-best
+  OPTUNA_TRIALS: 20
 
 jobs:
 
   register-dataset:
+    name: Register dataset
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install CI dependencies
         run: |
-          python3 -m pip install --upgrade pip
-          pip install datasets huggingface_hub pandas
+          python -m pip install --upgrade pip
+          pip install -r requirements-ci.txt || pip install datasets huggingface_hub pandas
 
-      - name: Upload Dataset to Hugging Face Hub
+      - name: Upload Dataset to Hugging Face Hub (with retries)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python tourism_project/model_building/register_dataset.py
-
+          set -euo pipefail
+          RETRY=0
+          MAX_RETRIES=3
+          until [ "$RETRY" -ge "$MAX_RETRIES" ]; do
+            echo "Attempt $((RETRY+1)) to upload dataset..."
+            python tourism_project/model_building/register_dataset.py && break || {
+              echo "Upload attempt $((RETRY+1)) failed."
+              RETRY=$((RETRY+1))
+              sleep $((RETRY * 5))
+            }
+          done
+          if [ "$RETRY" -ge "$MAX_RETRIES" ]; then
+            echo "Dataset upload failed after $MAX_RETRIES attempts."
+            exit 1
+          fi
 
   data-prep:
+    name: Data preparation
     needs: register-dataset
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install CI dependencies
         run: |
-          python3 -m pip install --upgrade pip
-          pip install pandas numpy scikit-learn datasets huggingface_hub joblib
+          python -m pip install --upgrade pip
+          pip install -r requirements-ci.txt
+          pip install joblib
 
-      - name: Run Data Preparation
+      - name: Run Data Preparation (with retries)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python tourism_project/model_building/data_prep.py
-
+          set -euo pipefail
+          for i in 1 2 3; do
+            echo "Data preparation attempt $i"
+            python tourism_project/model_building/data_prep.py && break || {
+              echo "data_prep failed - retrying after sleep"
+              sleep $((i * 10))
+            }
+          done
 
   model-traning:
+    name: Model training & tuning
     needs: data-prep
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install ML dependencies
         run: |
-          python3 -m pip install --upgrade pip
-          pip install scikit-learn xgboost optuna mlflow joblib pandas numpy huggingface_hub optuna-integration[mlflow]
+          python -m pip install --upgrade pip
+          pip install -r requirements-ci.txt
+          pip install optuna optuna-integration[mlflow] mlflow xgboost
 
-      - name: Start MLflow Server
+      - name: Start MLflow UI (background)
         run: |
-          nohup mlflow ui --host 0.0.0.0 --port 5000 &
-          sleep 5  # Wait for server to start
+          nohup mlflow ui --host 127.0.0.1 --port 5000 --artifacts-destination tourism_project/model_building/artifacts/mlruns > mlflow.log 2>&1 &
+          sleep 3
+          echo "MLflow UI started (background)."
 
-      - name: Model Building
+      - name: Model Building & Tuning (with retries)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          OPTUNA_TRIALS: ${{ env.OPTUNA_TRIALS }}
+        run: |
+          set -euo pipefail
+          ATTEMPT=0
+          MAX=3
+          while [ $ATTEMPT -lt $MAX ]; do
+            echo "Train attempt $((ATTEMPT+1))"
+            python tourism_project/model_building/train_and_tune.py && break || {
+              echo "Training attempt $((ATTEMPT+1)) failed, sleeping..."
+              ATTEMPT=$((ATTEMPT+1))
+              sleep $((ATTEMPT * 30))
+            }
+          done
+          if [ $ATTEMPT -ge $MAX ]; then
+            echo "Training failed after ${MAX} attempts."
+            exit 1
+          fi
+
+      - name: Register Best Model to HF Model Hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python tourism_project/model_building/train_and_tune.py
           python tourism_project/model_building/register_model.py
 
-
   deploy-hosting:
+    name: Deploy hosting (Space)
     needs: [model-traning, data-prep, register-dataset]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install HF client
         run: |
-          python3 -m pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install huggingface_hub
 
-      - name: Push files to Frontend Hugging Face Space
+      - name: Push deployment files to Hugging Face Space (with retries)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_ID: ${{ secrets.HF_SPACE_ID }}
         run: |
-          python tourism_project/deployment/push_to_space.py
+          set -euo pipefail
+          for i in 1 2 3; do
+            echo "Push to space attempt $i"
+            python tourism_project/deployment/push_to_space.py && break || {
+              echo "Push attempt $i failed"
+              sleep $((i * 10))
+            }
+          done
+
+      - name: Commit artifacts (if any) back to main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "ci: update generated artifacts"
+            git push "https://${GITHUB_ACTOR}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" HEAD:main || echo "Push failed (retries or no permission)."
+          else
+            echo "No artifacts to commit."
+          fi
