@@ -13,7 +13,7 @@ from huggingface_hub import HfApi, create_repo, upload_file
 # CONFIGURATION
 # -------------------------------------------------------
 HF_USERNAME = os.getenv("HF_USERNAME", "sathishaiuse")
-SPACE_NAME = os.getenv("HF_SPACE_NAME", "wellness-tourism-deployment")
+SPACE_NAME = os.getenv("HF_SPACE_NAME", "tourism-wellness-package-final")
 SPACE_REPO_ID = f"{HF_USERNAME}/{SPACE_NAME}"
 
 HF_TOKEN = os.getenv("HF_TOKEN")  # MUST be provided in GH Actions
